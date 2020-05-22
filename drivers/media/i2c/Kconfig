@@ -1480,6 +1480,16 @@ config VIDEO_S5C73M3
 	  This is a V4L2 sensor driver for Samsung S5C73M3
 	  8 Mpixel camera.
 
+config VIDEO_DUMMY_SENSOR
+	tristate "Dummy sensor support"
+	depends on VIDEO_V4L2 && VIDEO_V4L2_SUBDEV_API
+	select V4L2_FWNODE
+	help
+	  This is a V4L2 sensor driver for CSI2 sources that have no actual
+	  controls but needs to hook into a V4L2 CSI2 receiver subdevice.
+	  To do that it allows any format and resolution to be requested, but
+	  it is only stored rather than actioned.
+
 endmenu
 
 menu "Lens drivers"
