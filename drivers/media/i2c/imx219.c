@@ -147,6 +147,10 @@ struct imx219_mode {
 	/* Frame height */
 	unsigned int height;
 
+	/* Frame length without vertical blanking
+	 * units: 1 or 2 lines depending on binning_mode */
+	unsigned int frm_length;
+
 	/* Analog crop rectangle. */
 	struct v4l2_rect crop;
 
@@ -484,6 +488,7 @@ static const struct imx219_mode supported_modes[] = {
 		/* 8MPix 15fps mode */
 		.width = 3280,
 		.height = 2464,
+		.frm_length = 2464,
 		.crop = {
 			.left = 0,
 			.top = 0,
@@ -500,6 +505,7 @@ static const struct imx219_mode supported_modes[] = {
 		/* 1080P 30fps cropped */
 		.width = 1920,
 		.height = 1080,
+		.frm_length = 1080,
 		.crop = {
 			.left = 680,
 			.top = 692,
@@ -516,6 +522,7 @@ static const struct imx219_mode supported_modes[] = {
 		/* 2x2 binned 30fps mode */
 		.width = 1640,
 		.height = 1232,
+		.frm_length = 1232,
 		.crop = {
 			.left = 0,
 			.top = 0,
@@ -532,6 +539,10 @@ static const struct imx219_mode supported_modes[] = {
 		/* 640x480 30fps mode */
 		.width = 640,
 		.height = 480,
+		/* binning_mode = 3, unit is 2 lines
+		 * 10 extra lines, otherwise the image gets truncated
+		 * in case of IMX219_VBLANK_MIN */
+		.frm_length = 240 + 10,
 		.crop = {
 			.left = 1000,
 			.top = 752,
@@ -741,7 +752,7 @@ static int imx219_set_ctrl(struct v4l2_ctrl *ctrl)
 		int exposure_max, exposure_def;
 
 		/* Update max exposure while meeting expected vblanking */
-		exposure_max = imx219->mode->height + ctrl->val - 4;
+		exposure_max = imx219->mode->frm_length + ctrl->val - 4;
 		exposure_def = (exposure_max < IMX219_EXPOSURE_DEFAULT) ?
 			exposure_max : IMX219_EXPOSURE_DEFAULT;
 		__v4l2_ctrl_modify_range(imx219->exposure,
@@ -784,7 +795,7 @@ static int imx219_set_ctrl(struct v4l2_ctrl *ctrl)
 	case V4L2_CID_VBLANK:
 		ret = imx219_write_reg(imx219, IMX219_REG_VTS,
 				       IMX219_REG_VALUE_16BIT,
-				       imx219->mode->height + ctrl->val);
+				       imx219->mode->frm_length + ctrl->val);
 		break;
 	case V4L2_CID_TEST_PATTERN_RED:
 		ret = imx219_write_reg(imx219, IMX219_REG_TESTP_RED,
@@ -990,11 +1001,11 @@ static int imx219_set_pad_format(struct v4l2_subdev *sd,
 			/* Update limits and set FPS to default */
 			__v4l2_ctrl_modify_range(imx219->vblank,
 						 IMX219_VBLANK_MIN,
-						 IMX219_VTS_MAX - mode->height,
+						 IMX219_VTS_MAX - mode->frm_length,
 						 1,
-						 mode->vts_def - mode->height);
+						 mode->vts_def - mode->frm_length);
 			__v4l2_ctrl_s_ctrl(imx219->vblank,
-					   mode->vts_def - mode->height);
+					   mode->vts_def - mode->frm_length);
 			/*
 			 * Update max exposure while meeting
 			 * expected vblanking
@@ -1347,7 +1358,7 @@ static int imx219_init_controls(struct imx219 *imx219)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(&imx219->sd);
 	struct v4l2_ctrl_handler *ctrl_hdlr;
-	unsigned int height = imx219->mode->height;
+	unsigned int frm_lengh = imx219->mode->frm_length;
 	struct v4l2_fwnode_device_properties props;
 	int exposure_max, exposure_def, hblank;
 	int i, ret;
@@ -1370,8 +1381,8 @@ static int imx219_init_controls(struct imx219 *imx219)
 	/* Initial vblank/hblank/exposure parameters based on current mode */
 	imx219->vblank = v4l2_ctrl_new_std(ctrl_hdlr, &imx219_ctrl_ops,
 					   V4L2_CID_VBLANK, IMX219_VBLANK_MIN,
-					   IMX219_VTS_MAX - height, 1,
-					   imx219->mode->vts_def - height);
+					   IMX219_VTS_MAX - frm_lengh, 1,
+					   imx219->mode->vts_def - frm_lengh);
 	hblank = IMX219_PPL_DEFAULT - imx219->mode->width;
 	imx219->hblank = v4l2_ctrl_new_std(ctrl_hdlr, &imx219_ctrl_ops,
 					   V4L2_CID_HBLANK, hblank, hblank,
