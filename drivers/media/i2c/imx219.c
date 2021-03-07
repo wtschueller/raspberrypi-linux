@@ -54,7 +54,7 @@
 #define IMX219_VTS_15FPS		0x0dc6
 #define IMX219_VTS_30FPS_1080P		0x06e3
 #define IMX219_VTS_30FPS_BINNED		0x06e3
-#define IMX219_VTS_30FPS_640x480	0x06e3
+#define IMX219_VTS_30FPS_640x480	(0x06e3 * 2) /* special binning */
 #define IMX219_VTS_MAX			0xffff
 
 #define IMX219_VBLANK_MIN		4
@@ -146,12 +146,17 @@ struct imx219_mode {
 	unsigned int width;
 	/* Frame height */
 	unsigned int height;
+	
+	/* binning factors: 2 for special binning, 1 otherwise */
+	unsigned int hbin_fac;
+	unsigned int vbin_fac;
 
 	/* Analog crop rectangle. */
 	struct v4l2_rect crop;
 
 	/* V-timing */
 	unsigned int vts_def;
+	unsigned int vts_min;
 
 	/* Default register values */
 	struct imx219_reg_list reg_list;
@@ -484,6 +489,8 @@ static const struct imx219_mode supported_modes[] = {
 		/* 8MPix 15fps mode */
 		.width = 3280,
 		.height = 2464,
+		.hbin_fac = 1,
+		.vbin_fac = 1,
 		.crop = {
 			.left = 0,
 			.top = 0,
@@ -491,6 +498,7 @@ static const struct imx219_mode supported_modes[] = {
 			.height = 2464
 		},
 		.vts_def = IMX219_VTS_15FPS,
+		.vts_min = IMX219_VBLANK_MIN,
 		.reg_list = {
 			.num_of_regs = ARRAY_SIZE(mode_3280x2464_regs),
 			.regs = mode_3280x2464_regs,
@@ -500,6 +508,8 @@ static const struct imx219_mode supported_modes[] = {
 		/* 1080P 30fps cropped */
 		.width = 1920,
 		.height = 1080,
+		.hbin_fac = 1,
+		.vbin_fac = 1,
 		.crop = {
 			.left = 680,
 			.top = 692,
@@ -507,6 +517,7 @@ static const struct imx219_mode supported_modes[] = {
 			.height = 1080
 		},
 		.vts_def = IMX219_VTS_30FPS_1080P,
+		.vts_min = IMX219_VBLANK_MIN,
 		.reg_list = {
 			.num_of_regs = ARRAY_SIZE(mode_1920_1080_regs),
 			.regs = mode_1920_1080_regs,
@@ -516,6 +527,8 @@ static const struct imx219_mode supported_modes[] = {
 		/* 2x2 binned 30fps mode */
 		.width = 1640,
 		.height = 1232,
+		.hbin_fac = 1,
+		.vbin_fac = 1,
 		.crop = {
 			.left = 0,
 			.top = 0,
@@ -523,15 +536,18 @@ static const struct imx219_mode supported_modes[] = {
 			.height = 2464
 		},
 		.vts_def = IMX219_VTS_30FPS_BINNED,
+		.vts_min = IMX219_VBLANK_MIN,
 		.reg_list = {
 			.num_of_regs = ARRAY_SIZE(mode_1640_1232_regs),
 			.regs = mode_1640_1232_regs,
 		},
 	},
 	{
-		/* 640x480 30fps mode */
+		/* 640x480 30fps mode, uses special binning*/
 		.width = 640,
 		.height = 480,
+		.hbin_fac = 2,
+		.vbin_fac = 2,
 		.crop = {
 			.left = 1000,
 			.top = 752,
@@ -539,6 +555,9 @@ static const struct imx219_mode supported_modes[] = {
 			.height = 960
 		},
 		.vts_def = IMX219_VTS_30FPS_640x480,
+		/* lower values truncate the image or result in
+		 * no transmission at all */
+		.vts_min = (IMX219_VBLANK_MIN + 10) * 2,
 		.reg_list = {
 			.num_of_regs = ARRAY_SIZE(mode_640_480_regs),
 			.regs = mode_640_480_regs,
@@ -740,8 +759,10 @@ static int imx219_set_ctrl(struct v4l2_ctrl *ctrl)
 	if (ctrl->id == V4L2_CID_VBLANK) {
 		int exposure_max, exposure_def;
 
-		/* Update max exposure while meeting expected vblanking */
-		exposure_max = imx219->mode->height + ctrl->val - 4;
+		/* Update max exposure while meeting expected vblanking
+		 * see data sheet section 5-7-1 exposure depends on
+		 * frame length register depending on vertical binning */
+		exposure_max = (imx219->mode->height + ctrl->val) / imx219->mode->vbin_fac - 4;
 		exposure_def = (exposure_max < IMX219_EXPOSURE_DEFAULT) ?
 			exposure_max : IMX219_EXPOSURE_DEFAULT;
 		__v4l2_ctrl_modify_range(imx219->exposure,
@@ -784,7 +805,8 @@ static int imx219_set_ctrl(struct v4l2_ctrl *ctrl)
 	case V4L2_CID_VBLANK:
 		ret = imx219_write_reg(imx219, IMX219_REG_VTS,
 				       IMX219_REG_VALUE_16BIT,
-				       imx219->mode->height + ctrl->val);
+				       (imx219->mode->height + ctrl->val)
+				       / imx219->mode->vbin_fac);
 		break;
 	case V4L2_CID_TEST_PATTERN_RED:
 		ret = imx219_write_reg(imx219, IMX219_REG_TESTP_RED,
@@ -989,17 +1011,19 @@ static int imx219_set_pad_format(struct v4l2_subdev *sd,
 			imx219->mode = mode;
 			/* Update limits and set FPS to default */
 			__v4l2_ctrl_modify_range(imx219->vblank,
-						 IMX219_VBLANK_MIN,
+						 mode->vts_min,
 						 IMX219_VTS_MAX - mode->height,
-						 1,
+						 mode->vbin_fac,
 						 mode->vts_def - mode->height);
 			__v4l2_ctrl_s_ctrl(imx219->vblank,
 					   mode->vts_def - mode->height);
 			/*
 			 * Update max exposure while meeting
 			 * expected vblanking
-			 */
-			exposure_max = mode->vts_def - 4;
+			 * see data sheet section 5-7-1 exposure max depends on vertical
+			 * special binning, maintain the original numberssee data sheet section 5-7-1 exposure depends on
+			 * frame length register depending on vertical binning */
+		 	exposure_max = (mode->vts_def / imx219->mode->vbin_fac) - 4;
 			exposure_def =
 				(exposure_max < IMX219_EXPOSURE_DEFAULT) ?
 					exposure_max : IMX219_EXPOSURE_DEFAULT;
@@ -1012,8 +1036,14 @@ static int imx219_set_pad_format(struct v4l2_subdev *sd,
 			 * Currently PPL is fixed to IMX219_PPL_DEFAULT, so
 			 * hblank depends on mode->width only, and is not
 			 * changeble in any way other than changing the mode.
+			 * 
+			 * However, the line time is only half in case of
+			 * special horizontal binning even though the pixels per
+			 * line count is the same. Dividing the IMX219_PPL_DEFAULT
+			 * by 2 lets the user calculate the correct line time using
+			 * something like (width + hblank) / IMX219_PIXEL_RATE.
 			 */
-			hblank = IMX219_PPL_DEFAULT - mode->width;
+			hblank = (IMX219_PPL_DEFAULT / mode->hbin_fac) - mode->width;
 			__v4l2_ctrl_modify_range(imx219->hblank, hblank, hblank,
 						 1, hblank);
 		}
@@ -1370,9 +1400,9 @@ static int imx219_init_controls(struct imx219 *imx219)
 	/* Initial vblank/hblank/exposure parameters based on current mode */
 	imx219->vblank = v4l2_ctrl_new_std(ctrl_hdlr, &imx219_ctrl_ops,
 					   V4L2_CID_VBLANK, IMX219_VBLANK_MIN,
-					   IMX219_VTS_MAX - height, 1,
+					   IMX219_VTS_MAX - height, imx219->mode->vbin_fac,
 					   imx219->mode->vts_def - height);
-	hblank = IMX219_PPL_DEFAULT - imx219->mode->width;
+	hblank = (IMX219_PPL_DEFAULT / imx219->mode->hbin_fac) - imx219->mode->width;
 	imx219->hblank = v4l2_ctrl_new_std(ctrl_hdlr, &imx219_ctrl_ops,
 					   V4L2_CID_HBLANK, hblank, hblank,
 					   1, hblank);
